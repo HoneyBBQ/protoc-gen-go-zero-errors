@@ -239,7 +239,7 @@ plugins:
 
 本项目参考了 go-kratos/errors 的设计理念，但专为 go-zero 优化：
 
-| 功能特性 | bytenet-errors-gen | 说明 |
+| 功能特性 | protoc-gen-go-zero-errors | 说明 |
 |---------|-------------------|------|
 | `New()` | ✅ 支持 | 创建错误 |
 | `Code()` | ✅ 支持 | 获取错误码 |
@@ -255,4 +255,4 @@ plugins:
 
 ## 📄 License
 
-MIT License 
+MIT License
