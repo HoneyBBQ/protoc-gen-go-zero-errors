@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package errors;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/honeybbq/go-zero-errors-proto/errors;errorspb";
+
+// Defines an HTTP status code for an error reason (enum value).
+// 使用参考 go-kratos 的字段编号和命名
+extend google.protobuf.EnumValueOptions {
+  int32 code = 1109; 
+}
+
+// Defines a default HTTP status code for an error enum.
+// 使用参考 go-kratos 的字段编号和命名
+extend google.protobuf.EnumOptions {
+  int32 default_code = 1108;
+} 

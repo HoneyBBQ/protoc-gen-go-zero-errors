@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package errors;
+
+option go_package = "github.com/honeybbq/go-zero-errors-proto/errors;errorspb";
+
+// Status represents the error status
+message Status {
+  int32 code = 1;
+  string reason = 2; 
+  string message = 3;
+  map<string, string> metadata = 4;
+} 

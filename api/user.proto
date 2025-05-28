@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package api.user.v1;
+
+// 引用 BSR 中的错误扩展
+import "errors/options.proto";
+
+option go_package = "github.com/example/api/user;user";
+
+// 用户服务
+service UserService {
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
+}
+
+message GetUserRequest {
+  int64 id = 1;
+}
+
+message GetUserResponse {
+  User user = 1;
+}
+
+message CreateUserRequest {
+  string name = 1;
+  string email = 2;
+}
+
+message CreateUserResponse {
+  User user = 1;
+}
+
+message User {
+  int64 id = 1;
+  string name = 2;
+  string email = 3;
+}
+
+// 错误定义 - 使用你发布的 BSR 模块
+enum UserError {
+  option (errors.default_code) = 500;
+
+  // 用户不存在
+  USER_NOT_FOUND = 0 [(errors.code) = 404];
+  // 用户已存在
+  USER_ALREADY_EXISTS = 1 [(errors.code) = 409];
+  // 无效的用户数据
+  INVALID_USER_DATA = 2 [(errors.code) = 400];
+  // 权限不足
+  PERMISSION_DENIED = 3 [(errors.code) = 403];
+} 
