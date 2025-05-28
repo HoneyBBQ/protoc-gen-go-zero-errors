@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -50,123 +51,243 @@ type Error struct {
 }
 
 // getGoroutineID 获取当前goroutine ID
-func getGoroutineID() uint64 {
-	var buf [64]byte
+func getGoroutineID() (result uint64) {
+	// 添加 panic 恢复机制
+	defer func() {
+		if r := recover(); r != nil {
+			// 发生 panic 时返回 0
+			result = 0
+		}
+	}()
+
+	var buf [32]byte // 减小缓冲区大小，通常goroutine ID不会很长
 	n := runtime.Stack(buf[:], false)
 	stack := string(buf[:n])
 
 	// 从stack trace中提取goroutine ID
 	// stack格式: "goroutine 1 [running]:\n..."
-	for i := 10; i < len(stack); i++ {
-		if stack[i] == ' ' {
-			if id, err := strconv.ParseUint(stack[10:i], 10, 64); err == nil {
-				return id
-			}
-			break
+	start := 10 // "goroutine " 的长度
+	if start >= len(stack) {
+		return 0
+	}
+
+	end := start
+	for end < len(stack) && stack[end] != ' ' {
+		end++
+	}
+
+	if end > start {
+		if id, err := strconv.ParseUint(stack[start:end], 10, 64); err == nil {
+			return id
 		}
 	}
 	return 0
 }
 
 // generateRandomSuffix 生成随机后缀，避免时间戳冲突
-func generateRandomSuffix() string {
+func generateRandomSuffix() (result string) {
+	// 添加 panic 恢复机制
+	defer func() {
+		if r := recover(); r != nil {
+			// 发生 panic 时返回简单的时间戳
+			result = fmt.Sprintf("%x", time.Now().UnixNano()&0xFFFFFFFF)
+		}
+	}()
+
 	buf := make([]byte, 4)
-	rand.Read(buf)
+	if _, err := rand.Read(buf); err != nil {
+		// 如果随机数生成失败，使用时间戳作为后备
+		return fmt.Sprintf("%x", time.Now().UnixNano()&0xFFFFFFFF)
+	}
 	return fmt.Sprintf("%x", buf)
 }
 
 // generateErrorID 生成包含丰富debug信息的错误ID
 func generateErrorID(skip int) string {
+	// 添加 panic 恢复机制
+	defer func() {
+		if r := recover(); r != nil {
+			// 如果发生 panic，记录并返回一个简单的错误ID
+			// 这里不能使用日志，因为可能导致循环调用
+		}
+	}()
+
+	// 使用内部函数尝试生成完整的错误ID
+	if id := tryGenerateErrorID(skip + 1); id != "" {
+		return id
+	}
+
+	// 如果内部函数失败，返回备用ID
+	return generateFallbackErrorID()
+}
+
+// tryGenerateErrorID 尝试生成错误ID，如果失败返回空字符串
+func tryGenerateErrorID(skip int) (result string) {
+	// 添加 panic 恢复
+	defer func() {
+		if r := recover(); r != nil {
+			result = ""
+		}
+	}()
+
+	return generateErrorIDInternal(skip)
+}
+
+// generateErrorIDInternal 内部实现，包含实际的ID生成逻辑
+func generateErrorIDInternal(skip int) string {
+	// 完整版本 - 包含详细信息
 	// 获取调用者信息
 	pc, file, line, ok := runtime.Caller(skip)
-	var filename, funcName, pkgName string
+	var filename, funcName string
 
 	if !ok {
 		filename = "unknown"
 		funcName = "unknown"
-		pkgName = "unknown"
 		line = 0
 	} else {
-		// 文件名
+		// 文件名 - 只保留文件名，不要完整路径
 		filename = filepath.Base(file)
 
-		// 函数信息
+		// 函数信息 - 简化处理
 		fn := runtime.FuncForPC(pc)
 		if fn != nil {
 			fullName := fn.Name()
-			// 分离包名和函数名
-			if lastSlash := findLastSlash(fullName); lastSlash >= 0 {
-				if lastDot := findLastDot(fullName[lastSlash:]); lastDot >= 0 {
-					pkgName = fullName[:lastSlash+lastDot]
-					funcName = fullName[lastSlash+lastDot+1:]
-				} else {
-					pkgName = "main"
-					funcName = fullName[lastSlash+1:]
-				}
+			// 只保留函数名部分，去掉包路径
+			if lastDot := findLastDot(fullName); lastDot >= 0 && lastDot < len(fullName)-1 {
+				funcName = fullName[lastDot+1:]
+			} else if lastDot == len(fullName)-1 {
+				// 如果点在最后，使用完整名称
+				funcName = fullName
 			} else {
-				pkgName = "main"
 				funcName = fullName
 			}
 		} else {
 			funcName = "unknown"
-			pkgName = "unknown"
 		}
 	}
 
-	// 获取各种debug信息
+	// 获取关键debug信息
 	timestamp := time.Now().UnixNano()
 	goroutineID := getGoroutineID()
 	pid := os.Getpid()
 	randomSuffix := generateRandomSuffix()
 
-	// 组合所有信息
-	// 格式: pkg.func@file:line:timestamp:gid:pid:random
-	info := fmt.Sprintf("%s.%s@%s:%d:%d:%d:%d:%s",
-		pkgName, funcName, filename, line, timestamp, goroutineID, pid, randomSuffix)
+	// 使用更高效的字符串构建 - 简化格式
+	// 格式: func@file:line:timestamp:gid:pid:random
+	var builder strings.Builder
+	builder.Grow(128) // 预分配容量
 
-	// Base64编码混淆
-	encoded := base64.StdEncoding.EncodeToString([]byte(info))
+	builder.WriteString(funcName)
+	builder.WriteByte('@')
+	builder.WriteString(filename)
+	builder.WriteByte(':')
+	builder.WriteString(strconv.Itoa(line))
+	builder.WriteByte(':')
+	builder.WriteString(strconv.FormatInt(timestamp, 10))
+	builder.WriteByte(':')
+	builder.WriteString(strconv.FormatUint(goroutineID, 10))
+	builder.WriteByte(':')
+	builder.WriteString(strconv.Itoa(pid))
+	builder.WriteByte(':')
+	builder.WriteString(randomSuffix)
 
-	return encoded
+	// Base64编码
+	return base64.StdEncoding.EncodeToString([]byte(builder.String()))
+}
+
+// generateFallbackErrorID 生成一个简单的备用错误ID
+func generateFallbackErrorID() string {
+	// 使用最基本的信息生成ID，避免复杂操作
+	timestamp := time.Now().UnixNano()
+	pid := os.Getpid()
+
+	// 使用简单的随机字节，避免复杂操作
+	randomBytes := make([]byte, 4)
+	rand.Read(randomBytes) // crypto/rand.Read 不会返回错误
+	randomNum := int64(randomBytes[0])<<24 | int64(randomBytes[1])<<16 | int64(randomBytes[2])<<8 | int64(randomBytes[3])
+
+	// 格式: fallback:timestamp:pid:random
+	fallbackID := fmt.Sprintf("fallback:%d:%d:%d", timestamp, pid, randomNum)
+	return base64.StdEncoding.EncodeToString([]byte(fallbackID))
 }
 
 // findLastSlash 找到最后一个斜杠的位置
 func findLastSlash(s string) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == '/' {
-			return i
-		}
-	}
-	return -1
+	return strings.LastIndex(s, "/")
 }
 
 // findLastDot 找到最后一个点的位置
 func findLastDot(s string) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == '.' {
-			return i
-		}
-	}
-	return -1
+	return strings.LastIndex(s, ".")
 }
 
-// DecodeErrorID 解码错误ID，用于debug (仅在开发环境使用)
-func DecodeErrorID(encodedID string) (map[string]interface{}, error) {
+// ErrorIDInfo 错误ID解码后的结构化信息
+type ErrorIDInfo struct {
+	Function      string `json:"function"`       // 函数名
+	File          string `json:"file"`           // 文件名
+	Line          int    `json:"line"`           // 行号
+	Timestamp     int64  `json:"timestamp"`      // 纳秒时间戳
+	GoroutineID   uint64 `json:"goroutine_id"`   // Goroutine ID
+	ProcessID     int    `json:"process_id"`     // 进程ID
+	RandomSuffix  string `json:"random_suffix"`  // 随机后缀
+	TimeFormatted string `json:"time_formatted"` // 格式化的时间
+	Raw           string `json:"raw"`            // 原始解码信息
+}
+
+// DecodeErrorID 解码错误ID，返回结构化信息
+func DecodeErrorID(encodedID string) (*ErrorIDInfo, error) {
 	decoded, err := base64.StdEncoding.DecodeString(encodedID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode error ID: %w", err)
 	}
 
-	info := string(decoded)
-	// 解析格式: pkg.func@file:line:timestamp:gid:pid:random
+	raw := string(decoded)
+	info := &ErrorIDInfo{Raw: raw}
 
-	result := make(map[string]interface{})
-	result["raw"] = info
+	// 解析格式: func@file:line:timestamp:gid:pid:random
+	parts := strings.Split(raw, ":")
+	if len(parts) < 6 {
+		return info, fmt.Errorf("invalid error ID format, expected at least 6 parts, got %d", len(parts))
+	}
 
-	// 这里可以添加更详细的解析逻辑
-	// 但为了简单起见，目前只返回原始信息
+	// 解析函数名和文件名 (func@file 格式)
+	funcFilePart := parts[0]
+	if atIndex := strings.LastIndex(funcFilePart, "@"); atIndex >= 0 {
+		info.Function = funcFilePart[:atIndex]
+		info.File = funcFilePart[atIndex+1:]
+	} else {
+		info.Function = "unknown"
+		info.File = funcFilePart
+	}
 
-	return result, nil
+	// 解析行号
+	if line, err := strconv.Atoi(parts[1]); err == nil {
+		info.Line = line
+	}
+
+	// 解析时间戳
+	if timestamp, err := strconv.ParseInt(parts[2], 10, 64); err == nil {
+		info.Timestamp = timestamp
+		// 格式化时间
+		info.TimeFormatted = time.Unix(0, timestamp).Format("2006-01-02 15:04:05.000")
+	}
+
+	// 解析 Goroutine ID
+	if gid, err := strconv.ParseUint(parts[3], 10, 64); err == nil {
+		info.GoroutineID = gid
+	}
+
+	// 解析进程ID
+	if pid, err := strconv.Atoi(parts[4]); err == nil {
+		info.ProcessID = pid
+	}
+
+	// 随机后缀
+	if len(parts) > 5 {
+		info.RandomSuffix = parts[5]
+	}
+
+	return info, nil
 }
 
 // Error implements the error interface.
@@ -597,3 +718,18 @@ func ToHTTPCode(code codes.Code) int {
 // The tool will parse error definitions from .proto files (similar to protoc-gen-go-errors)
 // and generate Go code (enums for reasons, helper functions like IsXXX, ErrorXXX)
 // that utilizes the Error struct and mechanisms defined in this package.
+
+// IsClientError 检查是否为客户端错误
+func (e *Error) IsClientError() bool {
+	return e.Code >= 400 && e.Code < 500
+}
+
+// IsServerError 检查是否为服务器错误
+func (e *Error) IsServerError() bool {
+	return e.Code >= 500
+}
+
+// IsAuthError 检查是否为认证/授权错误
+func (e *Error) IsAuthError() bool {
+	return e.Code == 401 || e.Code == 403
+}
